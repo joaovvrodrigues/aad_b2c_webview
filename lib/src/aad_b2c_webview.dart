@@ -1,8 +1,8 @@
-import 'dart:io';
-
 import 'package:aad_b2c_webview/src/client_authentication.dart';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
+import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
 import '../src/constants.dart';
 
@@ -39,6 +39,7 @@ class ADB2CEmbedWebView extends StatefulWidget {
 }
 
 class ADB2CEmbedWebViewState extends State<ADB2CEmbedWebView> {
+  late final WebViewController _controller;
   bool isLoading = true;
   bool showRedirect = false;
   String userFlowUrl = '';
@@ -74,14 +75,66 @@ class ADB2CEmbedWebViewState extends State<ADB2CEmbedWebView> {
     userFlowName = widget.userFlowName;
 
     //Enable virtual display.
-    if (Platform.isAndroid) WebView.platform = AndroidWebView();
+    // if (Platform.isAndroid) WebView.platform = AndroidWebView();
+
+    late final PlatformWebViewControllerCreationParams params;
+    if (WebViewPlatform.instance is WebKitWebViewPlatform) {
+      params = WebKitWebViewControllerCreationParams(
+        allowsInlineMediaPlayback: true,
+        mediaTypesRequiringUserAction: const <PlaybackMediaTypes>{},
+      );
+    } else {
+      params = const PlatformWebViewControllerCreationParams();
+    }
+
+    final WebViewController controller = WebViewController.fromPlatformCreationParams(params);
+
+    controller
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageFinished: (String url) {
+            setState(() {
+              isLoading = false;
+            });
+
+            final Uri response = Uri.dataFromString(url);
+            //Check that the user is past authentication and current URL is the redirect with the code.
+            onPageFinishedTasks(url, response);
+          },
+          onWebResourceError: (WebResourceError error) {
+            debugPrint('''
+Page resource error:
+  code: ${error.errorCode}
+  description: ${error.description}
+  errorType: ${error.errorType}
+  isForMainFrame: ${error.isForMainFrame}
+          ''');
+          },
+        ),
+      )
+      ..addJavaScriptChannel(
+        'Toaster',
+        onMessageReceived: (JavaScriptMessage message) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(message.message)),
+          );
+        },
+      )
+      ..loadRequest(Uri.parse(getUserFlowUrl(userFlowUrl)));
+
+    if (controller.platform is AndroidWebViewController) {
+      AndroidWebViewController.enableDebugging(true);
+      (controller.platform as AndroidWebViewController).setMediaPlaybackRequiresUserGesture(false);
+    }
+
+    _controller = controller;
   }
 
   authorizationCodeFlow(url) async {
     String authCode = url.split(Constants.authCode)[1];
     ClientAuthentication clientAuthentication = ClientAuthentication();
-    final response = await clientAuthentication.getAllTokens(
-        redirectUrl, clientId, authCode);
+    final response = await clientAuthentication.getAllTokens(redirectUrl, clientId, authCode);
     if (response.statusCode == 200) {
       onAccessToken!(response.data[Constants.accessToken]);
       onIDToken!(response.data[Constants.idToken]);
@@ -121,20 +174,9 @@ class ADB2CEmbedWebViewState extends State<ADB2CEmbedWebView> {
     return Scaffold(
       body: Stack(
         children: <Widget>[
-          WebView(
+          WebViewWidget(
             key: _key,
-            debuggingEnabled: true,
-            initialUrl: getUserFlowUrl(userFlowUrl),
-            javascriptMode: JavascriptMode.unrestricted,
-            onPageFinished: (String url) {
-              setState(() {
-                isLoading = false;
-              });
-
-              final Uri response = Uri.dataFromString(url);
-              //Check that the user is past authentication and current URL is the redirect with the code.
-              onPageFinishedTasks(url, response);
-            },
+            controller: _controller,
           ),
           if (isLoading || showRedirect)
             const Center(
